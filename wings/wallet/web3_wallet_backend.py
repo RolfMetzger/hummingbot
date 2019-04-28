@@ -9,6 +9,7 @@ import logging
 import math
 import time
 from typing import (
+    Any,
     List,
     Dict,
     Optional,
@@ -57,7 +58,7 @@ class Web3WalletBackend(PubSub):
         return cls._w3wb_logger
 
     def __init__(self,
-                 private_key: any,
+                 private_key: Any,
                  jsonrpc_url: str,
                  erc20_token_addresses: List[str],
                  chain: EthereumChain = EthereumChain.ROPSTEN):
@@ -423,6 +424,18 @@ class Web3WalletBackend(PubSub):
         signature: str = signature_dict["signature"].hex()
         return signature
 
+    def estimate_transaction_cost(self, contract_function: ContractFunction, **kwargs) -> int:
+        transaction_args: Dict[str, Any] = {
+            "from": self.address,
+            "nonce": self.nonce,
+            "chainId": self.chain.value,
+            "gasPrice": self.gas_price,
+        }
+        transaction_args.update(kwargs)
+        transaction: Dict[str, Any] = contract_function.buildTransaction(transaction_args)
+        gas_estimate = self._w3.eth.estimateGas(transaction)
+        return gas_estimate * self.gas_price
+
     def execute_transaction(self, contract_function: ContractFunction, **kwargs) -> str:
         """
         This function WILL result in immediate network calls (e.g. to get the gas price, nonce and gas cost), even
@@ -436,14 +449,14 @@ class Web3WalletBackend(PubSub):
             raise EnvironmentError("Cannot send transactions when network status is not connected.")
 
         gas_price: int = self.gas_price
-        transaction_args: Dict[str, any] = {
+        transaction_args: Dict[str, Any] = {
             "from": self.address,
             "nonce": self.nonce,
             "chainId": self.chain.value,
             "gasPrice": gas_price,
         }
         transaction_args.update(kwargs)
-        transaction: Dict[str, any] = contract_function.buildTransaction(transaction_args)
+        transaction: Dict[str, Any] = contract_function.buildTransaction(transaction_args)
         if "gas" not in transaction:
             estimate_gas: int = 1000000
             try:
@@ -470,7 +483,7 @@ class Web3WalletBackend(PubSub):
 
         if asset_name == "ETH":
             gas_price: int = self.gas_price
-            transaction: Dict[str, any] = {
+            transaction: Dict[str, Any] = {
                 "to": address,
                 "value": int(amount * 1e18),
                 "gas": 21000,

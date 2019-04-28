@@ -39,7 +39,8 @@ from wings.events import (
     OrderFilledEvent,
     OrderCancelledEvent,
     MarketTransactionFailureEvent,
-    TradeType
+    TradeType,
+    TradeFee
 )
 from zero_ex.order_utils import (
     generate_order_hash_hex,
@@ -320,6 +321,23 @@ cdef class RadarRelayMarket(MarketBase):
                 self.logger().error("Unexpected error while fetching account updates.", exc_info=True)
                 await asyncio.sleep(0.5)
 
+    cdef object c_get_fee(self,
+                          str symbol,
+                          object order_type,
+                          object order_side,
+                          double amount,
+                          double price):
+        # there are no fees for makers on Radar Relay
+        cdef:
+            int gas_estimate = 130000 # approximate gas used for 0x market orders
+            double transaction_cost_eth
+
+        if order_type is OrderType.LIMIT:
+            return TradeFee(percent=0.0)
+        # only fee for takers is gas cost of transaction
+        transaction_cost_eth = self._wallet.gas_price * gas_estimate / 1e18
+        return TradeFee(percent=0.0, flat_fees=[("ETH", transaction_cost_eth)])
+
     def _update_balances(self):
         self._account_balances = self.wallet.get_all_balances()
 
@@ -347,13 +365,12 @@ cdef class RadarRelayMarket(MarketBase):
         order_url = f"{RADAR_RELAY_REST_ENDPOINT}/orders/{order_hash}"
         return await self._api_request("get", url=order_url)
 
-    async def _get_order_updates(self) -> List[Dict[str, Any]]:
+    async def _get_order_updates(self, tracked_limit_orders: List[InFlightOrder]) -> List[Dict[str, Any]]:
         account_orders_list = await self.get_account_orders()
         account_orders_map = {}
         for account_order in account_orders_list:
             account_orders_map[account_order["orderHash"]] = account_order
 
-        tracked_limit_orders = list(self._in_flight_limit_orders.values())
         order_updates = []
         tasks = []
         tasks_index = []
@@ -382,7 +399,7 @@ cdef class RadarRelayMarket(MarketBase):
         
         if len(self._in_flight_limit_orders) > 0:
             tracked_limit_orders = list(self._in_flight_limit_orders.values())
-            order_updates = await self._get_order_updates()
+            order_updates = await self._get_order_updates(tracked_limit_orders)
             for order_update, tracked_limit_order in zip(order_updates, tracked_limit_orders):
                 if isinstance(order_update, Exception):
                     self.logger().error(f"Error fetching status update for the order "
@@ -638,7 +655,7 @@ cdef class RadarRelayMarket(MarketBase):
         signed_market_orders = response["orders"]
         average_price = float(response["averagePrice"])
         base_asset_decimals = self.trading_rules.get(symbol).amount_decimals
-        amt_with_decimals = int(Decimal(amount) * Decimal(f"1e{base_asset_decimals}"))
+        amt_with_decimals = Decimal(amount) * Decimal(f"1e{base_asset_decimals}")
 
         signatures = []
         orders = []
@@ -725,7 +742,7 @@ cdef class RadarRelayMarket(MarketBase):
                                  f"{trading_rule.max_order_size}")
 
             if order_type is OrderType.LIMIT:
-                if price == NaN:
+                if math.isnan(price):
                     raise ValueError(f"Limit orders require a price. Aborting.")
                 elif expires is None:
                     raise ValueError(f"Limit orders require an expiration timestamp 'expiration_ts'. Aborting.")
