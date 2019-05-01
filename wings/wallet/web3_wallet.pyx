@@ -16,6 +16,7 @@ from wings.events import (
 )
 from wings.ethereum_chain import EthereumChain
 from wings.event_listener cimport EventListener
+from wings.network_iterator import NetworkStatus
 from wings.pubsub cimport PubSub
 from wings.wallet.wallet_base import WalletBase
 from wings.wallet.web3_wallet_backend import Web3WalletBackend
@@ -170,19 +171,26 @@ cdef class Web3Wallet(WalletBase):
     def to_raw(self, asset_name: str, nominal_amount: float) -> int:
         return self._best_backend.to_raw(asset_name, nominal_amount)
 
+    async def start_network(self):
+        self._select_best_backend_task = asyncio.ensure_future(self._select_best_backend_loop())
+
+    async def stop_network(self):
+        if self._select_best_backend_task is not None:
+            self._select_best_backend_task.cancel()
+            self._select_best_backend_task = None
+
+    async def check_network(self) -> NetworkStatus:
+        pass
+
     cdef c_start(self, Clock clock, double timestamp):
         WalletBase.c_start(self, clock, timestamp)
         if clock.clock_mode is not ClockMode.REALTIME:
             raise EnvironmentError("Web3 wallet can only run in real time mode. Do not use this for back-testing.")
-        self._select_best_backend_task = asyncio.ensure_future(self._select_best_backend_loop())
         for backend in self._wallet_backends:
             backend.start()
 
     cdef c_stop(self, Clock clock):
         WalletBase.c_stop(self, clock)
-        if self._select_best_backend_task is not None:
-            self._select_best_backend_task.cancel()
-            self._select_best_backend_task = None
 
     cdef str c_send(self, str address, str asset_name, double amount):
         return self._best_backend.send(address, asset_name, amount)
