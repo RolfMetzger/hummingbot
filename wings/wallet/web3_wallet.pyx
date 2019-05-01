@@ -58,15 +58,14 @@ cdef class Web3Wallet(WalletBase):
                  backend_urls: List[str],
                  erc20_token_addresses: List[str],
                  chain: EthereumChain = EthereumChain.ROPSTEN):
-        cdef:
-            PubSub typed_backend
-
         super().__init__()
 
         self._local_account = Account.privateKeyToAccount(private_key)
         self._wallet_backends = [Web3WalletBackend(private_key, url, erc20_token_addresses, chain=chain)
                                  for url in backend_urls]
         self._best_backend = self._wallet_backends[0]
+        self._last_backend_network_states = [NetworkStatus.STOPPED] * len(self._wallet_backends)
+
         self._select_best_backend_task = None
         self._event_dedup_window = OrderedDict()
 
@@ -92,18 +91,8 @@ cdef class Web3Wallet(WalletBase):
             self, WalletEvent.TransactionFailure.value
         )
 
-        all_forwarders = [
-            self._received_asset_forwarder,
-            self._gas_used_forwarder,
-            self._token_approved_forwarder,
-            self._eth_wrapped_forwarder,
-            self._eth_unwrapped_forwarder,
-            self._transaction_failure_forwarder
-        ]
-        for backend, event_forwarder in itertools.product(self._wallet_backends, all_forwarders):
-            event_tag = event_forwarder.event_tag
-            typed_backend = backend
-            typed_backend.c_add_listener(event_tag, event_forwarder)
+        # The check network operation can be done more frequently since it's only an indirect check.
+        self.check_network_interval = 2.0
 
     @property
     def address(self) -> str:
@@ -174,13 +163,53 @@ cdef class Web3Wallet(WalletBase):
     async def start_network(self):
         self._select_best_backend_task = asyncio.ensure_future(self._select_best_backend_loop())
 
+        all_forwarders = [
+            self._received_asset_forwarder,
+            self._gas_used_forwarder,
+            self._token_approved_forwarder,
+            self._eth_wrapped_forwarder,
+            self._eth_unwrapped_forwarder,
+            self._transaction_failure_forwarder
+        ]
+        for backend, event_forwarder in itertools.product(self._wallet_backends, all_forwarders):
+            event_tag = event_forwarder.event_tag
+            (<PubSub>backend).c_add_listener(event_tag, event_forwarder)
+
     async def stop_network(self):
         if self._select_best_backend_task is not None:
             self._select_best_backend_task.cancel()
             self._select_best_backend_task = None
 
+        all_forwarders = [
+            self._received_asset_forwarder,
+            self._gas_used_forwarder,
+            self._token_approved_forwarder,
+            self._eth_wrapped_forwarder,
+            self._eth_unwrapped_forwarder,
+            self._transaction_failure_forwarder
+        ]
+        for backend, event_forwarder in itertools.product(self._wallet_backends, all_forwarders):
+            event_tag = event_forwarder.event_tag
+            (<PubSub>backend).c_remove_listener(event_tag, event_forwarder)
+
     async def check_network(self) -> NetworkStatus:
-        pass
+        new_backend_network_states = [backend.network_status for backend in self._wallet_backends]
+
+        for backend, last_state, new_state in zip(
+                self._wallet_backends,
+                self._last_backend_network_states,
+                new_backend_network_states):
+            if last_state != new_state:
+                if new_state is NetworkStatus.CONNECTED:
+                    await backend.start_network()
+                elif new_state is NetworkStatus.NOT_CONNECTED:
+                    await backend.stop_network()
+
+        self._last_backend_network_states = new_backend_network_states
+
+        return (NetworkStatus.CONNECTED
+                if any([s is NetworkStatus.CONNECTED for s in new_backend_network_states])
+                else NetworkStatus.NOT_CONNECTED)
 
     cdef c_start(self, Clock clock, double timestamp):
         WalletBase.c_start(self, clock, timestamp)
@@ -191,6 +220,8 @@ cdef class Web3Wallet(WalletBase):
 
     cdef c_stop(self, Clock clock):
         WalletBase.c_stop(self, clock)
+        for backend in self._wallet_backends:
+            backend.stop()
 
     cdef str c_send(self, str address, str asset_name, double amount):
         return self._best_backend.send(address, asset_name, amount)
