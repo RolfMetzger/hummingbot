@@ -13,6 +13,7 @@ from wings.market.market_base import (
     OrderType
 )
 from wings.events import TradeType
+from wings.network_iterator import NetworkStatus
 from wings.order_book import OrderBook
 from hummingbot.strategy.strategy_base import StrategyBase
 from .arbitrage_market_pair import ArbitrageMarketPair
@@ -74,7 +75,7 @@ cdef class ArbitrageStrategy(StrategyBase):
                  market_pairs: List[ArbitrageMarketPair],
                  min_profitability: float,
                  logging_options: int = OPTION_LOG_ORDER_COMPLETED,
-                 status_report_interval: float = 900,
+                 status_report_interval: float = 60.0,
                  next_trade_delay_interval: float = 15.0):
 
         if len(market_pairs) < 0:
@@ -257,26 +258,28 @@ cdef class ArbitrageStrategy(StrategyBase):
     cdef c_tick(self, double timestamp):
         StrategyBase.c_tick(self, timestamp)
 
-        if not self._all_markets_ready:
-            self._all_markets_ready = all([market.ready for market in self._markets])
+        cdef:
+            int64_t current_tick = <int64_t>(timestamp // self._status_report_interval)
+            int64_t last_tick = <int64_t>(self._last_timestamp // self._status_report_interval)
+            bint should_report_warnings = current_tick > last_tick
+
+        try:
             if not self._all_markets_ready:
-                # Markets not ready yet. Don't do anything.
+                self._all_markets_ready = all([market.ready for market in self._markets])
+                if not self._all_markets_ready:
+                    # Markets not ready yet. Don't do anything.
+                    if should_report_warnings:
+                        self.logger().warning(f"Markets are not ready. No arbitrage trading is permitted.")
+                    return
+
+            if not all([market.network_status is NetworkStatus.CONNECTED for market in self._markets]):
+                self.logger().warning(f"Markets are not all online. No arbitrage trading is permitted.")
                 return
 
-        for market_pair in self._market_pairs:
-            self.c_process_market_pair(market_pair)
-
-        cdef:
-            int64_t current_tick
-            int64_t last_tick
-
-        if self._logging_options & self.OPTION_LOG_STATUS_REPORT:
-            current_tick = <int64_t>(timestamp // self._status_report_interval)
-            last_tick = <int64_t>(self._last_timestamp // self._status_report_interval)
-            if current_tick < last_tick:
-                self.logger().info(self.format_status())
-
-        self._last_timestamp = timestamp
+            for market_pair in self._market_pairs:
+                self.c_process_market_pair(market_pair)
+        finally:
+            self._last_timestamp = timestamp
 
     cdef c_did_complete_buy_order(self, object buy_order_completed_event):
         cdef:
