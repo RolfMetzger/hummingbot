@@ -682,15 +682,14 @@ cdef class ArbitrageStrategy(StrategyBase):
                                                  str buy_market_quote_currency,
                                                  str sell_market_quote_currency):
         """
-        Iterates through sell and buy order books and returns an array of matched profitable sell and buy order
-        pairs.
+        Iterates through sell and buy order books and returns a list of matched profitable sell and buy order
+        pairs with sizes.
         :param min_profitability: 
         :param buy_order_book: 
         :param sell_order_book: 
         :param buy_market_quote_currency: 
         :param sell_market_quote_currency: 
-        :return: ordered array of discrete, profitable combinations of sell and buy orders from the bid and ask
-                 order books. 
+        :return: ordered list of (bid_price, ask_price, amount) 
         """
         cdef:
             double step_amount = 0
