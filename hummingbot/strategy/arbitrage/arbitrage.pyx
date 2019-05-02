@@ -273,7 +273,8 @@ cdef class ArbitrageStrategy(StrategyBase):
                     return
 
             if not all([market.network_status is NetworkStatus.CONNECTED for market in self._markets]):
-                self.logger().warning(f"Markets are not all online. No arbitrage trading is permitted.")
+                if should_report_warnings:
+                    self.logger().warning(f"Markets are not all online. No arbitrage trading is permitted.")
                 return
 
             for market_pair in self._market_pairs:
